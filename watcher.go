@@ -233,6 +233,16 @@ func (w *Watcher) list(name string) (map[string]os.FileInfo, error) {
 	}
 
 	fileList[name] = stat
+	for _, f := range w.ffh {
+		err := f(stat, name)
+		if err == ErrSkip {
+			delete(fileList, name)
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	// If it's not a directory, just return.
 	if !stat.IsDir() {
@@ -308,16 +318,6 @@ func (w *Watcher) listRecursive(name string) (map[string]os.FileInfo, error) {
 			return err
 		}
 
-		for _, f := range w.ffh {
-			err := f(info, path)
-			if err == ErrSkip {
-				return nil
-			}
-			if err != nil {
-				return err
-			}
-		}
-
 		// If path is ignored and it's a directory, skip the directory. If it's
 		// ignored and it's a single file, skip the file.
 		_, ignored := w.ignored[path]
@@ -333,6 +333,17 @@ func (w *Watcher) listRecursive(name string) (map[string]os.FileInfo, error) {
 			}
 			return nil
 		}
+
+		for _, f := range w.ffh {
+			err := f(info, path)
+			if err == ErrSkip {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+		}
+
 		// Add the path and it's info to the file list.
 		fileList[path] = info
 		return nil
@@ -497,9 +508,12 @@ func (w *Watcher) retrieveFileList() map[string]os.FileInfo {
 			if err != nil {
 				if os.IsNotExist(err) {
 					w.mu.Unlock()
-					if name == err.(*os.PathError).Path {
-						w.Error <- ErrWatchedFileDeleted
-						w.RemoveRecursive(name)
+					pathErr, ok := err.(*os.PathError)
+					if ok {
+						if name == pathErr.Path {
+							w.Error <- ErrWatchedFileDeleted
+							w.RemoveRecursive(name)
+						}
 					}
 					w.mu.Lock()
 				} else {
@@ -511,9 +525,12 @@ func (w *Watcher) retrieveFileList() map[string]os.FileInfo {
 			if err != nil {
 				if os.IsNotExist(err) {
 					w.mu.Unlock()
-					if name == err.(*os.PathError).Path {
-						w.Error <- ErrWatchedFileDeleted
-						w.Remove(name)
+					pathErr, ok := err.(*os.PathError)
+					if ok {
+						if name == pathErr.Path {
+							w.Error <- ErrWatchedFileDeleted
+							w.Remove(name)
+						}
 					}
 					w.mu.Lock()
 				} else {

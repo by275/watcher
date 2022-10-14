@@ -24,6 +24,7 @@ func main() {
 	stdinPipe := flag.Bool("pipe", false, "pipe event's info to command's stdin")
 	keepalive := flag.Bool("keepalive", false, "keep alive when a cmd returns code != 0")
 	ignore := flag.String("ignore", "", "comma separated list of paths to ignore")
+	verbose := flag.Bool("verbose", false, "write event's info to stdout")
 
 	flag.Parse()
 
@@ -76,7 +77,9 @@ func main() {
 			select {
 			case event := <-w.Event:
 				// Print the event's info.
-				fmt.Println(event)
+				if *verbose {
+					fmt.Println(event)
+				}
 
 				// Run the command if one was specified.
 				if *cmd != "" {

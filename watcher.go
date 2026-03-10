@@ -272,23 +272,26 @@ func (w *Watcher) list(name string) (map[string]os.FileInfo, error) {
 }
 
 func listWithConfig(name string, cfg scanConfig) (map[string]os.FileInfo, error) {
-	fileList := make(map[string]os.FileInfo)
-
 	// Make sure name exists.
 	stat, err := os.Stat(name)
 	if err != nil {
 		return nil, err
 	}
 
+	fileList := make(map[string]os.FileInfo)
 	fileList[name] = stat
-	for _, f := range cfg.ffh {
-		err := f(stat, name)
-		if err == ErrSkip {
-			delete(fileList, name)
-			continue
-		}
-		if err != nil {
-			return nil, err
+	includeRoot := true
+	if len(cfg.ffh) > 0 {
+		for _, f := range cfg.ffh {
+			err := f(stat, name)
+			if err == ErrSkip {
+				delete(fileList, name)
+				includeRoot = false
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -301,6 +304,10 @@ func listWithConfig(name string, cfg scanConfig) (map[string]os.FileInfo, error)
 	fInfoList, err := ioutil.ReadDir(name)
 	if err != nil {
 		return nil, err
+	}
+	fileList = make(map[string]os.FileInfo, len(fInfoList)+1)
+	if includeRoot {
+		fileList[name] = stat
 	}
 	// Add all of the files in the directory to the file list as long
 	// as they aren't on the ignored list or are hidden files if ignoreHidden
@@ -317,13 +324,15 @@ outer:
 			continue
 		}
 
-		for _, f := range cfg.ffh {
-			err := f(fInfo, path)
-			if err == ErrSkip {
-				continue outer
-			}
-			if err != nil {
-				return nil, err
+		if len(cfg.ffh) > 0 {
+			for _, f := range cfg.ffh {
+				err := f(fInfo, path)
+				if err == ErrSkip {
+					continue outer
+				}
+				if err != nil {
+					return nil, err
+				}
 			}
 		}
 
@@ -389,13 +398,15 @@ func listRecursiveWithConfig(name string, cfg scanConfig) (map[string]os.FileInf
 			return nil
 		}
 
-		for _, f := range cfg.ffh {
-			err := f(info, path)
-			if err == ErrSkip {
-				return nil
-			}
-			if err != nil {
-				return err
+		if len(cfg.ffh) > 0 {
+			for _, f := range cfg.ffh {
+				err := f(info, path)
+				if err == ErrSkip {
+					return nil
+				}
+				if err != nil {
+					return err
+				}
 			}
 		}
 

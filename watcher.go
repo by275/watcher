@@ -217,12 +217,15 @@ func rootIgnoredOrHidden(name string, cfg scanConfig) (bool, error) {
 	if _, ignored := cfg.ignored[name]; ignored {
 		return true, nil
 	}
+	if !cfg.ignoreHidden {
+		return false, nil
+	}
 
 	isHidden, err := isHiddenFile(name)
 	if err != nil {
 		return false, err
 	}
-	return cfg.ignoreHidden && isHidden, nil
+	return isHidden, nil
 }
 
 // Add adds either a single file or directory to the file list.

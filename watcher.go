@@ -3,6 +3,7 @@ package watcher
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -208,11 +209,8 @@ type eventConfig struct {
 func (w *Watcher) snapshotScanConfigLocked() scanConfig {
 	cfg := scanConfig{
 		ffh:          append([]FilterFileHookFunc(nil), w.ffh...),
-		ignored:      make(map[string]struct{}, len(w.ignored)),
+		ignored:      maps.Clone(w.ignored),
 		ignoreHidden: w.ignoreHidden,
-	}
-	for path := range w.ignored {
-		cfg.ignored[path] = struct{}{}
 	}
 	return cfg
 }
@@ -240,10 +238,7 @@ func (w *Watcher) snapshotEventConfig() eventConfig {
 		maxEvents: w.maxEvents,
 	}
 	if len(w.ops) > 0 {
-		cfg.ops = make(map[Op]struct{}, len(w.ops))
-		for op := range w.ops {
-			cfg.ops[op] = struct{}{}
-		}
+		cfg.ops = maps.Clone(w.ops)
 	}
 	return cfg
 }
@@ -273,9 +268,7 @@ func (w *Watcher) Add(name string) (err error) {
 	}
 
 	w.mu.Lock()
-	for k, v := range fileList {
-		w.files[k] = v
-	}
+	maps.Copy(w.files, fileList)
 
 	// Add the name to the names list.
 	w.names[name] = false
@@ -383,9 +376,7 @@ func (w *Watcher) AddRecursive(name string) (err error) {
 	}
 
 	w.mu.Lock()
-	for k, v := range fileList {
-		w.files[k] = v
-	}
+	maps.Copy(w.files, fileList)
 
 	// Add the name to the names list.
 	w.names[name] = true
@@ -543,9 +534,7 @@ func (w *Watcher) WatchedFiles() map[string]os.FileInfo {
 	defer w.mu.Unlock()
 
 	files := make(map[string]os.FileInfo)
-	for k, v := range w.files {
-		files[k] = v
-	}
+	maps.Copy(files, w.files)
 
 	return files
 }
@@ -610,10 +599,7 @@ func (w *Watcher) TriggerEvent(eventType Op, file os.FileInfo) {
 func (w *Watcher) retrieveFileList() map[string]os.FileInfo {
 	w.mu.Lock()
 	cfg := w.snapshotScanConfigLocked()
-	names := make(map[string]bool, len(w.names))
-	for name, recursive := range w.names {
-		names[name] = recursive
-	}
+	names := maps.Clone(w.names)
 	prevFileCount := len(w.files)
 	w.mu.Unlock()
 
@@ -654,9 +640,7 @@ func (w *Watcher) retrieveFileList() map[string]os.FileInfo {
 			}
 		}
 		// Add the file's to the file list.
-		for k, v := range list {
-			fileList[k] = v
-		}
+		maps.Copy(fileList, list)
 	}
 
 	return fileList
@@ -756,10 +740,7 @@ func (w *Watcher) Start(d time.Duration) error {
 func (w *Watcher) pollEvents(files map[string]os.FileInfo, evt chan Event,
 	cancel chan struct{}) {
 	w.mu.Lock()
-	oldFiles := make(map[string]os.FileInfo, len(w.files))
-	for path, info := range w.files {
-		oldFiles[path] = info
-	}
+	oldFiles := maps.Clone(w.files)
 	w.mu.Unlock()
 
 	// Store create and remove events for use to check for rename events.

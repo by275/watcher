@@ -818,7 +818,14 @@ func (w *Watcher) pollEvents(files map[string]os.FileInfo, evt chan Event,
 				continue
 			}
 
-			if sameFile(info1, info2) {
+			// NOTE:
+			// Rename/move correlation relies on os.SameFile across all platforms.
+			// Historical context:
+			// - https://github.com/radovskyb/watcher/issues/16
+			// - https://github.com/radovskyb/watcher/issues/17
+			// On some Windows network/special filesystems, file identity lookups may be
+			// inconsistent, which can cause false negatives for rename/move detection.
+			if os.SameFile(info1, info2) {
 				e := Event{
 					Op:       Move,
 					Path:     path2,

@@ -394,13 +394,6 @@ func (w *Watcher) AddRecursive(name string) (err error) {
 	return nil
 }
 
-func (w *Watcher) listRecursive(name string) (map[string]os.FileInfo, error) {
-	w.mu.Lock()
-	cfg := w.snapshotScanConfigLocked()
-	w.mu.Unlock()
-	return listRecursiveWithConfig(name, cfg)
-}
-
 func listRecursiveWithConfig(name string, cfg scanConfig) (map[string]os.FileInfo, error) {
 	fileList := make(map[string]os.FileInfo)
 

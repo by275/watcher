@@ -675,6 +675,8 @@ func (w *Watcher) Start(d time.Duration) error {
 
 	// Unblock w.Wait().
 	w.wg.Done()
+	ticker := time.NewTicker(d)
+	defer ticker.Stop()
 
 	for {
 		// done lets the inner polling cycle loop know when the
@@ -693,6 +695,14 @@ func (w *Watcher) Start(d time.Duration) error {
 
 		// cancel can be used to cancel the current event polling function.
 		cancel := make(chan struct{})
+		cancelClosed := false
+		closeCancel := func() {
+			if cancelClosed {
+				return
+			}
+			close(cancel)
+			cancelClosed = true
+		}
 
 		// Look for events.
 		go func() {
@@ -707,7 +717,7 @@ func (w *Watcher) Start(d time.Duration) error {
 		for {
 			select {
 			case <-w.close:
-				close(cancel)
+				closeCancel()
 				close(w.Closed)
 				return nil
 			case event := <-evt:
@@ -719,12 +729,12 @@ func (w *Watcher) Start(d time.Duration) error {
 				}
 				numEvents++
 				if cfg.maxEvents > 0 && numEvents > cfg.maxEvents {
-					close(cancel)
+					closeCancel()
 					break inner
 				}
 				select {
 				case <-w.close:
-					close(cancel)
+					closeCancel()
 					close(w.Closed)
 					return nil
 				case w.Event <- event:
@@ -739,8 +749,14 @@ func (w *Watcher) Start(d time.Duration) error {
 		w.files = fileList
 		w.mu.Unlock()
 
-		// Sleep and then continue to the next loop iteration.
-		time.Sleep(d)
+		// Wait for next tick or close signal.
+		select {
+		case <-w.close:
+			closeCancel()
+			close(w.Closed)
+			return nil
+		case <-ticker.C:
+		}
 	}
 }
 

@@ -662,14 +662,18 @@ func (w *Watcher) Start(d time.Duration) error {
 func (w *Watcher) pollEvents(files map[string]os.FileInfo, evt chan Event,
 	cancel chan struct{}) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
+	oldFiles := make(map[string]os.FileInfo, len(w.files))
+	for path, info := range w.files {
+		oldFiles[path] = info
+	}
+	w.mu.Unlock()
 
 	// Store create and remove events for use to check for rename events.
 	creates := make(map[string]os.FileInfo)
 	removes := make(map[string]os.FileInfo)
 
 	// Check for removed files.
-	for path, info := range w.files {
+	for path, info := range oldFiles {
 		if _, found := files[path]; !found {
 			removes[path] = info
 		}
@@ -677,7 +681,7 @@ func (w *Watcher) pollEvents(files map[string]os.FileInfo, evt chan Event,
 
 	// Check for created files, writes and chmods.
 	for path, info := range files {
-		oldInfo, found := w.files[path]
+		oldInfo, found := oldFiles[path]
 		if !found {
 			// A file was created.
 			creates[path] = info

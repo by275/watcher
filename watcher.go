@@ -606,6 +606,15 @@ func putEventScratch(s *eventScratch) {
 	eventScratchPool.Put(s)
 }
 
+func isStopped(stop <-chan struct{}) bool {
+	select {
+	case <-stop:
+		return true
+	default:
+		return false
+	}
+}
+
 func signatureFromFileInfo(info os.FileInfo) fileSignature {
 	return fileSignature{
 		modTime: info.ModTime().UnixNano(),
@@ -708,68 +717,36 @@ func (w *Watcher) Start(d time.Duration) error {
 	defer ticker.Stop()
 
 	for {
-		// done lets the inner polling cycle loop know when the
-		// current cycle's method has finished executing.
-		// Use a buffered channel so the polling goroutine can exit
-		// even when the inner loop stops early.
-		done := make(chan struct{}, 1)
-
-		// Any events that are found are first piped to evt before
-		// being sent to the main Event channel.
-		evt := make(chan Event)
-
 		// Retrieve the file list for all watched file's and dirs.
 		fileList := w.retrieveFileList()
 		cfg := w.snapshotEventConfig()
 
-		// cancel can be used to cancel the current event polling function.
-		cancel := make(chan struct{})
-		cancelClosed := false
-		closeCancel := func() {
-			if cancelClosed {
-				return
-			}
-			close(cancel)
-			cancelClosed = true
+		events, stopped := w.pollEvents(fileList, w.close)
+		if stopped {
+			close(w.Closed)
+			return nil
 		}
-
-		// Look for events.
-		go func() {
-			w.pollEvents(fileList, evt, cancel)
-			done <- struct{}{}
-		}()
 
 		// numEvents holds the number of events for the current cycle.
 		numEvents := 0
 
-	inner:
-		for {
+		for _, event := range events {
+			if len(cfg.ops) > 0 { // Filter Ops.
+				if _, found := cfg.ops[event.Op]; !found {
+					continue
+				}
+			}
+
+			numEvents++
+			if cfg.maxEvents > 0 && numEvents > cfg.maxEvents {
+				break
+			}
+
 			select {
 			case <-w.close:
-				closeCancel()
 				close(w.Closed)
 				return nil
-			case event := <-evt:
-				if len(cfg.ops) > 0 { // Filter Ops.
-					_, found := cfg.ops[event.Op]
-					if !found {
-						continue
-					}
-				}
-				numEvents++
-				if cfg.maxEvents > 0 && numEvents > cfg.maxEvents {
-					closeCancel()
-					break inner
-				}
-				select {
-				case <-w.close:
-					closeCancel()
-					close(w.Closed)
-					return nil
-				case w.Event <- event:
-				}
-			case <-done: // Current cycle is finished.
-				break inner
+			case w.Event <- event:
 			}
 		}
 
@@ -781,7 +758,6 @@ func (w *Watcher) Start(d time.Duration) error {
 		// Wait for next tick or close signal.
 		select {
 		case <-w.close:
-			closeCancel()
 			close(w.Closed)
 			return nil
 		case <-ticker.C:
@@ -789,8 +765,7 @@ func (w *Watcher) Start(d time.Duration) error {
 	}
 }
 
-func (w *Watcher) pollEvents(files map[string]os.FileInfo, evt chan Event,
-	cancel chan struct{}) {
+func (w *Watcher) pollEvents(files map[string]os.FileInfo, stop <-chan struct{}) ([]Event, bool) {
 	scratch := getEventScratch()
 	defer putEventScratch(scratch)
 
@@ -802,9 +777,13 @@ func (w *Watcher) pollEvents(files map[string]os.FileInfo, evt chan Event,
 	// Store create and remove events for use to check for rename events.
 	creates := scratch.creates
 	removes := scratch.removes
+	events := make([]Event, 0, len(files)+len(oldFiles))
 
 	// Check for removed files.
 	for path, info := range oldFiles {
+		if isStopped(stop) {
+			return nil, true
+		}
 		if _, found := files[path]; !found {
 			removes[path] = info
 		}
@@ -812,6 +791,9 @@ func (w *Watcher) pollEvents(files map[string]os.FileInfo, evt chan Event,
 
 	// Check for created files, writes and chmods.
 	for path, info := range files {
+		if isStopped(stop) {
+			return nil, true
+		}
 		oldInfo, found := oldFiles[path]
 		if !found {
 			// A file was created.
@@ -819,18 +801,10 @@ func (w *Watcher) pollEvents(files map[string]os.FileInfo, evt chan Event,
 			continue
 		}
 		if oldInfo.ModTime() != info.ModTime() {
-			select {
-			case <-cancel:
-				return
-			case evt <- Event{Write, path, path, info}:
-			}
+			events = append(events, Event{Write, path, path, info})
 		}
 		if oldInfo.Mode() != info.Mode() {
-			select {
-			case <-cancel:
-				return
-			case evt <- Event{Chmod, path, path, info}:
-			}
+			events = append(events, Event{Chmod, path, path, info})
 		}
 	}
 
@@ -842,6 +816,9 @@ func (w *Watcher) pollEvents(files map[string]os.FileInfo, evt chan Event,
 	}
 
 	for path1, info1 := range removes {
+		if isStopped(stop) {
+			return nil, true
+		}
 		sig := signatureFromFileInfo(info1)
 		candidates := createBuckets[sig]
 
@@ -882,11 +859,7 @@ func (w *Watcher) pollEvents(files map[string]os.FileInfo, evt chan Event,
 					createBuckets[sig] = candidates
 				}
 
-				select {
-				case <-cancel:
-					return
-				case evt <- e:
-				}
+				events = append(events, e)
 				break
 			}
 		}
@@ -894,19 +867,18 @@ func (w *Watcher) pollEvents(files map[string]os.FileInfo, evt chan Event,
 
 	// Send all the remaining create and remove events.
 	for path, info := range creates {
-		select {
-		case <-cancel:
-			return
-		case evt <- Event{Create, path, "", info}:
+		if isStopped(stop) {
+			return nil, true
 		}
+		events = append(events, Event{Create, path, "", info})
 	}
 	for path, info := range removes {
-		select {
-		case <-cancel:
-			return
-		case evt <- Event{Remove, path, path, info}:
+		if isStopped(stop) {
+			return nil, true
 		}
+		events = append(events, Event{Remove, path, path, info})
 	}
+	return events, false
 }
 
 // Wait blocks until the watcher is started.

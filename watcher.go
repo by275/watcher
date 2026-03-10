@@ -150,6 +150,15 @@ func New() *Watcher {
 	}
 }
 
+func isClosed(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
 // SetMaxEvents controls the maximum amount of events that are sent on
 // the Event channel per watching cycle. If max events is less than 1, there is
 // no limit, which is the default.
@@ -561,6 +570,9 @@ func (w *Watcher) Start(d time.Duration) error {
 		w.mu.Unlock()
 		return ErrWatcherRunning
 	}
+	if isClosed(w.Closed) {
+		w.Closed = make(chan struct{})
+	}
 	w.running = true
 	w.mu.Unlock()
 
@@ -726,6 +738,9 @@ func (w *Watcher) Close() {
 	w.running = false
 	w.files = make(map[string]os.FileInfo)
 	w.names = make(map[string]bool)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	w.wg = &wg
 	w.mu.Unlock()
 	// Send a close signal to the Start method.
 	w.close <- struct{}{}

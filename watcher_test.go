@@ -974,6 +974,32 @@ func TestWatcherStartWhenAlreadyRunning(t *testing.T) {
 	}
 }
 
+func TestWatcherRestartAfterClose(t *testing.T) {
+	w := New()
+
+	run := func() {
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- w.Start(time.Millisecond * 10)
+		}()
+
+		w.Wait()
+		w.Close()
+
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("expected start to return nil, got %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for watcher to stop")
+		}
+	}
+
+	run()
+	run()
+}
+
 func BenchmarkEventRenameFile(b *testing.B) {
 	testDir, teardown := setup(b)
 	defer teardown()

@@ -596,6 +596,13 @@ func (w *Watcher) TriggerEvent(eventType Op, file os.FileInfo) {
 	w.Event <- Event{Op: eventType, Path: "-", FileInfo: file}
 }
 
+func (w *Watcher) sendError(err error) {
+	select {
+	case w.Error <- err:
+	default:
+	}
+}
+
 func (w *Watcher) retrieveFileList() map[string]os.FileInfo {
 	w.mu.Lock()
 	cfg := w.snapshotScanConfigLocked()
@@ -616,11 +623,11 @@ func (w *Watcher) retrieveFileList() map[string]os.FileInfo {
 				if os.IsNotExist(err) {
 					pathErr, ok := err.(*os.PathError)
 					if ok && name == pathErr.Path {
-						w.Error <- ErrWatchedFileDeleted
+						w.sendError(ErrWatchedFileDeleted)
 						_ = w.RemoveRecursive(name)
 					}
 				} else {
-					w.Error <- err
+					w.sendError(err)
 				}
 				continue
 			}
@@ -630,11 +637,11 @@ func (w *Watcher) retrieveFileList() map[string]os.FileInfo {
 				if os.IsNotExist(err) {
 					pathErr, ok := err.(*os.PathError)
 					if ok && name == pathErr.Path {
-						w.Error <- ErrWatchedFileDeleted
+						w.sendError(ErrWatchedFileDeleted)
 						_ = w.Remove(name)
 					}
 				} else {
-					w.Error <- err
+					w.sendError(err)
 				}
 				continue
 			}

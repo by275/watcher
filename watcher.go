@@ -120,7 +120,7 @@ type Watcher struct {
 	wg     *sync.WaitGroup
 
 	// mu protects the following.
-	mu           *sync.Mutex
+	mu           sync.RWMutex
 	ffh          []FilterFileHookFunc
 	running      bool
 	names        map[string]bool        // bool for recursive or not.
@@ -143,7 +143,6 @@ func New() *Watcher {
 		Error:   make(chan error, 16),
 		Closed:  make(chan struct{}),
 		close:   make(chan struct{}),
-		mu:      new(sync.Mutex),
 		wg:      &wg,
 		files:   make(map[string]os.FileInfo),
 		ignored: make(map[string]struct{}),
@@ -231,8 +230,8 @@ func rootIgnoredOrHidden(name string, cfg scanConfig) (bool, error) {
 }
 
 func (w *Watcher) snapshotEventConfig() eventConfig {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	w.mu.RLock()
+	defer w.mu.RUnlock()
 
 	cfg := eventConfig{
 		maxEvents: w.maxEvents,
@@ -245,9 +244,9 @@ func (w *Watcher) snapshotEventConfig() eventConfig {
 
 // Add adds either a single file or directory to the file list.
 func (w *Watcher) Add(name string) (err error) {
-	w.mu.Lock()
+	w.mu.RLock()
 	cfg := w.snapshotScanConfigLocked()
-	w.mu.Unlock()
+	w.mu.RUnlock()
 	name, err = filepath.Abs(name)
 	if err != nil {
 		return err
@@ -278,9 +277,9 @@ func (w *Watcher) Add(name string) (err error) {
 }
 
 func (w *Watcher) list(name string) (map[string]os.FileInfo, error) {
-	w.mu.Lock()
+	w.mu.RLock()
 	cfg := w.snapshotScanConfigLocked()
-	w.mu.Unlock()
+	w.mu.RUnlock()
 	return listWithConfig(name, cfg)
 }
 
@@ -361,9 +360,9 @@ outer:
 
 // AddRecursive adds either a single file or directory recursively to the file list.
 func (w *Watcher) AddRecursive(name string) (err error) {
-	w.mu.Lock()
+	w.mu.RLock()
 	cfg := w.snapshotScanConfigLocked()
-	w.mu.Unlock()
+	w.mu.RUnlock()
 
 	name, err = filepath.Abs(name)
 	if err != nil {
@@ -604,11 +603,11 @@ func (w *Watcher) sendError(err error) {
 }
 
 func (w *Watcher) retrieveFileList() map[string]os.FileInfo {
-	w.mu.Lock()
+	w.mu.RLock()
 	cfg := w.snapshotScanConfigLocked()
 	names := maps.Clone(w.names)
 	prevFileCount := len(w.files)
-	w.mu.Unlock()
+	w.mu.RUnlock()
 
 	fileList := make(map[string]os.FileInfo, prevFileCount)
 
@@ -762,9 +761,9 @@ func (w *Watcher) Start(d time.Duration) error {
 
 func (w *Watcher) pollEvents(files map[string]os.FileInfo, evt chan Event,
 	cancel chan struct{}) {
-	w.mu.Lock()
+	w.mu.RLock()
 	oldFiles := maps.Clone(w.files)
-	w.mu.Unlock()
+	w.mu.RUnlock()
 
 	// Store create and remove events for use to check for rename events.
 	creates := make(map[string]os.FileInfo, len(files))

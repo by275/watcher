@@ -582,7 +582,9 @@ func (w *Watcher) Start(d time.Duration) error {
 	for {
 		// done lets the inner polling cycle loop know when the
 		// current cycle's method has finished executing.
-		done := make(chan struct{})
+		// Use a buffered channel so the polling goroutine can exit
+		// even when the inner loop stops early.
+		done := make(chan struct{}, 1)
 
 		// Any events that are found are first piped to evt before
 		// being sent to the main Event channel.

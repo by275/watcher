@@ -1238,7 +1238,7 @@ func TestWatcherCloseWithMaxEvents(t *testing.T) {
 		}
 	}()
 
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		filePath := filepath.Join(testDir, fmt.Sprintf("storm_%d.txt", i))
 		if err := os.WriteFile(filePath, []byte{}, 0755); err != nil {
 			t.Fatal(err)
@@ -1283,7 +1283,7 @@ func TestWatcherCloseWithoutEventConsumer(t *testing.T) {
 	}()
 	w.Wait()
 
-	for i := 0; i < 128; i++ {
+	for i := range 128 {
 		filePath := filepath.Join(testDir, fmt.Sprintf("burst_%d.txt", i))
 		if err := os.WriteFile(filePath, []byte{}, 0755); err != nil {
 			t.Fatal(err)

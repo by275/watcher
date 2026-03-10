@@ -547,7 +547,7 @@ type fileInfo struct {
 	size    int64
 	mode    os.FileMode
 	modTime time.Time
-	sys     interface{}
+	sys     any
 	dir     bool
 }
 
@@ -566,7 +566,7 @@ func (fs *fileInfo) Name() string {
 func (fs *fileInfo) Size() int64 {
 	return fs.size
 }
-func (fs *fileInfo) Sys() interface{} {
+func (fs *fileInfo) Sys() any {
 	return fs.sys
 }
 

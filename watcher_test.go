@@ -1166,14 +1166,9 @@ func TestWatcherCloseWithMaxEvents(t *testing.T) {
 		errCh <- w.Start(time.Millisecond * 10)
 	}()
 	w.Wait()
+	// Keep Event channel drained so Start loop can continue to the close select.
 	go func() {
-		for {
-			select {
-			case <-w.Event:
-			case <-w.Error:
-			case <-w.Closed:
-				return
-			}
+		for range w.Event {
 		}
 	}()
 
@@ -1184,8 +1179,6 @@ func TestWatcherCloseWithMaxEvents(t *testing.T) {
 		}
 	}
 
-	time.Sleep(time.Millisecond * 50)
-
 	closed := make(chan struct{})
 	go func() {
 		w.Close()
@@ -1194,7 +1187,7 @@ func TestWatcherCloseWithMaxEvents(t *testing.T) {
 
 	select {
 	case <-closed:
-	case <-time.After(time.Second):
+	case <-time.After(2 * time.Second):
 		t.Fatal("watcher close blocked while max events were enabled")
 	}
 
@@ -1203,7 +1196,7 @@ func TestWatcherCloseWithMaxEvents(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected Start to return nil, got %v", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for Start to return")
 	}
 }

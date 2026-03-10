@@ -613,14 +613,19 @@ func (w *Watcher) Start(d time.Duration) error {
 				close(w.Closed)
 				return nil
 			case event := <-evt:
-				if len(w.ops) > 0 { // Filter Ops.
-					_, found := w.ops[event.Op]
+				w.mu.Lock()
+				ops := w.ops
+				maxEvents := w.maxEvents
+				w.mu.Unlock()
+
+				if len(ops) > 0 { // Filter Ops.
+					_, found := ops[event.Op]
 					if !found {
 						continue
 					}
 				}
 				numEvents++
-				if w.maxEvents > 0 && numEvents > w.maxEvents {
+				if maxEvents > 0 && numEvents > maxEvents {
 					close(cancel)
 					break inner
 				}

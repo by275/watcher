@@ -7,12 +7,20 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
 	"strings"
+	"syscall"
 	"time"
-	"unicode"
 
 	"github.com/by275/watcher"
 )
+
+func commandFromString(command string) (string, []string) {
+	if runtime.GOOS == "windows" {
+		return "cmd", []string{"/C", command}
+	}
+	return "sh", []string{"-c", command}
+}
 
 func main() {
 	interval := flag.String("interval", "100ms", "watcher poll interval")
@@ -43,11 +51,7 @@ func main() {
 	var cmdName string
 	var cmdArgs []string
 	if *cmd != "" {
-		split := strings.FieldsFunc(*cmd, unicode.IsSpace)
-		cmdName = split[0]
-		if len(split) > 1 {
-			cmdArgs = split[1:]
-		}
+		cmdName, cmdArgs = commandFromString(*cmd)
 	}
 
 	// Create a new Watcher with the specified options.
@@ -142,8 +146,9 @@ func main() {
 
 	closed := make(chan struct{})
 
-	c := make(chan os.Signal)
-	signal.Notify(c, os.Kill, os.Interrupt)
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(c)
 	go func() {
 		<-c
 		w.Close()

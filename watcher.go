@@ -150,6 +150,15 @@ func New() *Watcher {
 	}
 }
 
+func isClosed(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
 // SetMaxEvents controls the maximum amount of events that are sent on
 // the Event channel per watching cycle. If max events is less than 1, there is
 // no limit, which is the default.
@@ -412,11 +421,25 @@ func (w *Watcher) RemoveRecursive(name string) (err error) {
 	// If it's a directory, delete all of it's contents recursively
 	// from w.files.
 	for path := range w.files {
-		if strings.HasPrefix(path, name) {
+		if isSubpath(path, name) {
 			delete(w.files, path)
 		}
 	}
 	return nil
+}
+
+func isSubpath(path, root string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	if rel == ".." {
+		return false
+	}
+	return !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // Ignore adds paths that should be ignored.
@@ -561,6 +584,9 @@ func (w *Watcher) Start(d time.Duration) error {
 		w.mu.Unlock()
 		return ErrWatcherRunning
 	}
+	if isClosed(w.Closed) {
+		w.Closed = make(chan struct{})
+	}
 	w.running = true
 	w.mu.Unlock()
 
@@ -570,7 +596,9 @@ func (w *Watcher) Start(d time.Duration) error {
 	for {
 		// done lets the inner polling cycle loop know when the
 		// current cycle's method has finished executing.
-		done := make(chan struct{})
+		// Use a buffered channel so the polling goroutine can exit
+		// even when the inner loop stops early.
+		done := make(chan struct{}, 1)
 
 		// Any events that are found are first piped to evt before
 		// being sent to the main Event channel.
@@ -599,14 +627,19 @@ func (w *Watcher) Start(d time.Duration) error {
 				close(w.Closed)
 				return nil
 			case event := <-evt:
-				if len(w.ops) > 0 { // Filter Ops.
-					_, found := w.ops[event.Op]
+				w.mu.Lock()
+				ops := w.ops
+				maxEvents := w.maxEvents
+				w.mu.Unlock()
+
+				if len(ops) > 0 { // Filter Ops.
+					_, found := ops[event.Op]
 					if !found {
 						continue
 					}
 				}
 				numEvents++
-				if w.maxEvents > 0 && numEvents > w.maxEvents {
+				if maxEvents > 0 && numEvents > maxEvents {
 					close(cancel)
 					break inner
 				}
@@ -726,6 +759,9 @@ func (w *Watcher) Close() {
 	w.running = false
 	w.files = make(map[string]os.FileInfo)
 	w.names = make(map[string]bool)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	w.wg = &wg
 	w.mu.Unlock()
 	// Send a close signal to the Start method.
 	w.close <- struct{}{}

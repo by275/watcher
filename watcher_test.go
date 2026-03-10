@@ -481,6 +481,78 @@ func TestWatcherRemoveRecursive(t *testing.T) {
 	}
 }
 
+func TestWatcherRemoveRecursiveShouldNotRemovePrefixedSibling(t *testing.T) {
+	baseDir, err := ioutil.TempDir(".", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(baseDir)
+
+	targetDir := filepath.Join(baseDir, "dir")
+	siblingDir := filepath.Join(baseDir, "dir2")
+	if err := os.Mkdir(targetDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(siblingDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	targetFile := filepath.Join(targetDir, "target.txt")
+	siblingFile := filepath.Join(siblingDir, "sibling.txt")
+	if err := ioutil.WriteFile(targetFile, []byte{}, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ioutil.WriteFile(siblingFile, []byte{}, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	w := New()
+	if err := w.AddRecursive(targetDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.AddRecursive(siblingDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := w.RemoveRecursive(targetDir); err != nil {
+		t.Fatal(err)
+	}
+
+	targetDirAbs, err := filepath.Abs(targetDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetFileAbs, err := filepath.Abs(targetFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	siblingDirAbs, err := filepath.Abs(siblingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	siblingFileAbs, err := filepath.Abs(siblingFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, found := w.files[targetDirAbs]; found {
+		t.Fatalf("expected %s to be removed", targetDirAbs)
+	}
+	if _, found := w.files[targetFileAbs]; found {
+		t.Fatalf("expected %s to be removed", targetFileAbs)
+	}
+
+	if _, found := w.files[siblingDirAbs]; !found {
+		t.Fatalf("expected %s to remain", siblingDirAbs)
+	}
+	if _, found := w.files[siblingFileAbs]; !found {
+		t.Fatalf("expected %s to remain", siblingFileAbs)
+	}
+	if _, found := w.names[siblingDirAbs]; !found {
+		t.Fatalf("expected %s to remain in watched roots", siblingDirAbs)
+	}
+}
+
 func TestListFiles(t *testing.T) {
 	testDir, teardown := setup(t)
 	defer teardown()
@@ -974,6 +1046,32 @@ func TestWatcherStartWhenAlreadyRunning(t *testing.T) {
 	}
 }
 
+func TestWatcherRestartAfterClose(t *testing.T) {
+	w := New()
+
+	run := func() {
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- w.Start(time.Millisecond * 10)
+		}()
+
+		w.Wait()
+		w.Close()
+
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("expected start to return nil, got %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for watcher to stop")
+		}
+	}
+
+	run()
+	run()
+}
+
 func BenchmarkEventRenameFile(b *testing.B) {
 	testDir, teardown := setup(b)
 	defer teardown()
@@ -1121,6 +1219,57 @@ func TestSetMaxEvents(t *testing.T) {
 
 	if w.maxEvents != 3 {
 		t.Fatalf("expected max events to be 3, got %d", w.maxEvents)
+	}
+}
+
+func TestWatcherCloseWithMaxEvents(t *testing.T) {
+	testDir, teardown := setup(t)
+	defer teardown()
+
+	w := New()
+	w.SetMaxEvents(1)
+
+	if err := w.AddRecursive(testDir); err != nil {
+		t.Fatal(err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- w.Start(time.Millisecond * 10)
+	}()
+	w.Wait()
+	// Keep Event channel drained so Start loop can continue to the close select.
+	go func() {
+		for range w.Event {
+		}
+	}()
+
+	for i := 0; i < 20; i++ {
+		filePath := filepath.Join(testDir, fmt.Sprintf("storm_%d.txt", i))
+		if err := ioutil.WriteFile(filePath, []byte{}, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	closed := make(chan struct{})
+	go func() {
+		w.Close()
+		close(closed)
+	}()
+
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watcher close blocked while max events were enabled")
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("expected Start to return nil, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Start to return")
 	}
 }
 

@@ -201,6 +201,11 @@ type scanConfig struct {
 	ignoreHidden bool
 }
 
+type eventConfig struct {
+	ops       map[Op]struct{}
+	maxEvents int
+}
+
 func (w *Watcher) snapshotScanConfigLocked() scanConfig {
 	cfg := scanConfig{
 		ffh:          append([]FilterFileHookFunc(nil), w.ffh...),
@@ -226,6 +231,22 @@ func rootIgnoredOrHidden(name string, cfg scanConfig) (bool, error) {
 		return false, err
 	}
 	return isHidden, nil
+}
+
+func (w *Watcher) snapshotEventConfig() eventConfig {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	cfg := eventConfig{
+		maxEvents: w.maxEvents,
+	}
+	if len(w.ops) > 0 {
+		cfg.ops = make(map[Op]struct{}, len(w.ops))
+		for op := range w.ops {
+			cfg.ops[op] = struct{}{}
+		}
+	}
+	return cfg
 }
 
 // Add adds either a single file or directory to the file list.
@@ -679,6 +700,7 @@ func (w *Watcher) Start(d time.Duration) error {
 
 		// Retrieve the file list for all watched file's and dirs.
 		fileList := w.retrieveFileList()
+		cfg := w.snapshotEventConfig()
 
 		// cancel can be used to cancel the current event polling function.
 		cancel := make(chan struct{})
@@ -700,19 +722,14 @@ func (w *Watcher) Start(d time.Duration) error {
 				close(w.Closed)
 				return nil
 			case event := <-evt:
-				w.mu.Lock()
-				ops := w.ops
-				maxEvents := w.maxEvents
-				w.mu.Unlock()
-
-				if len(ops) > 0 { // Filter Ops.
-					_, found := ops[event.Op]
+				if len(cfg.ops) > 0 { // Filter Ops.
+					_, found := cfg.ops[event.Op]
 					if !found {
 						continue
 					}
 				}
 				numEvents++
-				if maxEvents > 0 && numEvents > maxEvents {
+				if cfg.maxEvents > 0 && numEvents > cfg.maxEvents {
 					close(cancel)
 					break inner
 				}

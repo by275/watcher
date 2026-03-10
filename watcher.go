@@ -195,45 +195,80 @@ func (w *Watcher) FilterOps(ops ...Op) {
 	w.mu.Unlock()
 }
 
+type scanConfig struct {
+	ffh          []FilterFileHookFunc
+	ignored      map[string]struct{}
+	ignoreHidden bool
+}
+
+func (w *Watcher) snapshotScanConfigLocked() scanConfig {
+	cfg := scanConfig{
+		ffh:          append([]FilterFileHookFunc(nil), w.ffh...),
+		ignored:      make(map[string]struct{}, len(w.ignored)),
+		ignoreHidden: w.ignoreHidden,
+	}
+	for path := range w.ignored {
+		cfg.ignored[path] = struct{}{}
+	}
+	return cfg
+}
+
+func rootIgnoredOrHidden(name string, cfg scanConfig) (bool, error) {
+	if _, ignored := cfg.ignored[name]; ignored {
+		return true, nil
+	}
+
+	isHidden, err := isHiddenFile(name)
+	if err != nil {
+		return false, err
+	}
+	return cfg.ignoreHidden && isHidden, nil
+}
+
 // Add adds either a single file or directory to the file list.
 func (w *Watcher) Add(name string) (err error) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
-
+	cfg := w.snapshotScanConfigLocked()
+	w.mu.Unlock()
 	name, err = filepath.Abs(name)
 	if err != nil {
 		return err
 	}
 
-	// If name is on the ignored list or if hidden files are
-	// ignored and name is a hidden file or directory, simply return.
-	_, ignored := w.ignored[name]
-
-	isHidden, err := isHiddenFile(name)
+	skipRoot, err := rootIgnoredOrHidden(name, cfg)
 	if err != nil {
 		return err
 	}
-
-	if ignored || (w.ignoreHidden && isHidden) {
+	if skipRoot {
 		return nil
 	}
 
 	// Add the directory's contents to the files list.
-	fileList, err := w.list(name)
+	fileList, err := listWithConfig(name, cfg)
 	if err != nil {
 		return err
 	}
+
+	w.mu.Lock()
 	for k, v := range fileList {
 		w.files[k] = v
 	}
 
 	// Add the name to the names list.
 	w.names[name] = false
+	w.mu.Unlock()
 
 	return nil
 }
 
 func (w *Watcher) list(name string) (map[string]os.FileInfo, error) {
+	w.mu.Lock()
+	cfg := w.snapshotScanConfigLocked()
+	w.mu.Unlock()
+	return listWithConfig(name, cfg)
+}
+
+func listWithConfig(name string, cfg scanConfig) (map[string]os.FileInfo, error) {
 	fileList := make(map[string]os.FileInfo)
 
 	// Make sure name exists.
@@ -243,7 +278,7 @@ func (w *Watcher) list(name string) (map[string]os.FileInfo, error) {
 	}
 
 	fileList[name] = stat
-	for _, f := range w.ffh {
+	for _, f := range cfg.ffh {
 		err := f(stat, name)
 		if err == ErrSkip {
 			delete(fileList, name)
@@ -270,18 +305,16 @@ func (w *Watcher) list(name string) (map[string]os.FileInfo, error) {
 outer:
 	for _, fInfo := range fInfoList {
 		path := filepath.Join(name, fInfo.Name())
-		_, ignored := w.ignored[path]
-
-		isHidden, err := isHiddenFile(path)
+		skipPath, err := rootIgnoredOrHidden(path, cfg)
 		if err != nil {
 			return nil, err
 		}
 
-		if ignored || (w.ignoreHidden && isHidden) {
+		if skipPath {
 			continue
 		}
 
-		for _, f := range w.ffh {
+		for _, f := range cfg.ffh {
 			err := f(fInfo, path)
 			if err == ErrSkip {
 				continue outer
@@ -299,28 +332,39 @@ outer:
 // AddRecursive adds either a single file or directory recursively to the file list.
 func (w *Watcher) AddRecursive(name string) (err error) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
+	cfg := w.snapshotScanConfigLocked()
+	w.mu.Unlock()
 
 	name, err = filepath.Abs(name)
 	if err != nil {
 		return err
 	}
 
-	fileList, err := w.listRecursive(name)
+	fileList, err := listRecursiveWithConfig(name, cfg)
 	if err != nil {
 		return err
 	}
+
+	w.mu.Lock()
 	for k, v := range fileList {
 		w.files[k] = v
 	}
 
 	// Add the name to the names list.
 	w.names[name] = true
+	w.mu.Unlock()
 
 	return nil
 }
 
 func (w *Watcher) listRecursive(name string) (map[string]os.FileInfo, error) {
+	w.mu.Lock()
+	cfg := w.snapshotScanConfigLocked()
+	w.mu.Unlock()
+	return listRecursiveWithConfig(name, cfg)
+}
+
+func listRecursiveWithConfig(name string, cfg scanConfig) (map[string]os.FileInfo, error) {
 	fileList := make(map[string]os.FileInfo)
 
 	return fileList, filepath.Walk(name, func(path string, info os.FileInfo, err error) error {
@@ -330,21 +374,19 @@ func (w *Watcher) listRecursive(name string) (map[string]os.FileInfo, error) {
 
 		// If path is ignored and it's a directory, skip the directory. If it's
 		// ignored and it's a single file, skip the file.
-		_, ignored := w.ignored[path]
-
-		isHidden, err := isHiddenFile(path)
+		skipPath, err := rootIgnoredOrHidden(path, cfg)
 		if err != nil {
 			return err
 		}
 
-		if ignored || (w.ignoreHidden && isHidden) {
+		if skipPath {
 			if info.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 
-		for _, f := range w.ffh {
+		for _, f := range cfg.ffh {
 			err := f(info, path)
 			if err == ErrSkip {
 				return nil
@@ -535,47 +577,47 @@ func (w *Watcher) TriggerEvent(eventType Op, file os.FileInfo) {
 
 func (w *Watcher) retrieveFileList() map[string]os.FileInfo {
 	w.mu.Lock()
-	defer w.mu.Unlock()
+	cfg := w.snapshotScanConfigLocked()
+	names := make(map[string]bool, len(w.names))
+	for name, recursive := range w.names {
+		names[name] = recursive
+	}
+	w.mu.Unlock()
 
 	fileList := make(map[string]os.FileInfo)
 
-	var list map[string]os.FileInfo
-	var err error
-
-	for name, recursive := range w.names {
+	for name, recursive := range names {
+		var (
+			list map[string]os.FileInfo
+			err  error
+		)
 		if recursive {
-			list, err = w.listRecursive(name)
+			list, err = listRecursiveWithConfig(name, cfg)
 			if err != nil {
 				if os.IsNotExist(err) {
-					w.mu.Unlock()
 					pathErr, ok := err.(*os.PathError)
-					if ok {
-						if name == pathErr.Path {
-							w.Error <- ErrWatchedFileDeleted
-							w.RemoveRecursive(name)
-						}
+					if ok && name == pathErr.Path {
+						w.Error <- ErrWatchedFileDeleted
+						_ = w.RemoveRecursive(name)
 					}
-					w.mu.Lock()
 				} else {
 					w.Error <- err
 				}
+				continue
 			}
 		} else {
-			list, err = w.list(name)
+			list, err = listWithConfig(name, cfg)
 			if err != nil {
 				if os.IsNotExist(err) {
-					w.mu.Unlock()
 					pathErr, ok := err.(*os.PathError)
-					if ok {
-						if name == pathErr.Path {
-							w.Error <- ErrWatchedFileDeleted
-							w.Remove(name)
-						}
+					if ok && name == pathErr.Path {
+						w.Error <- ErrWatchedFileDeleted
+						_ = w.Remove(name)
 					}
-					w.mu.Lock()
 				} else {
 					w.Error <- err
 				}
+				continue
 			}
 		}
 		// Add the file's to the file list.

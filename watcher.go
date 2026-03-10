@@ -617,9 +617,10 @@ func (w *Watcher) retrieveFileList() map[string]os.FileInfo {
 	for name, recursive := range w.names {
 		names[name] = recursive
 	}
+	prevFileCount := len(w.files)
 	w.mu.Unlock()
 
-	fileList := make(map[string]os.FileInfo)
+	fileList := make(map[string]os.FileInfo, prevFileCount)
 
 	for name, recursive := range names {
 		var (
@@ -765,8 +766,8 @@ func (w *Watcher) pollEvents(files map[string]os.FileInfo, evt chan Event,
 	w.mu.Unlock()
 
 	// Store create and remove events for use to check for rename events.
-	creates := make(map[string]os.FileInfo)
-	removes := make(map[string]os.FileInfo)
+	creates := make(map[string]os.FileInfo, len(files))
+	removes := make(map[string]os.FileInfo, len(oldFiles))
 
 	// Check for removed files.
 	for path, info := range oldFiles {

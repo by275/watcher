@@ -66,6 +66,26 @@ func setup(t testing.TB) (string, func()) {
 	}
 }
 
+func startWatcherAsync(w *Watcher, d time.Duration) <-chan error {
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- w.Start(d)
+	}()
+	return errCh
+}
+
+func waitWatcherStop(t testing.TB, errCh <-chan error) {
+	t.Helper()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("expected Start to return nil, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for watcher to stop")
+	}
+}
+
 func TestEventString(t *testing.T) {
 	e := &Event{Op: Create, Path: "/fake/path"}
 
@@ -597,20 +617,17 @@ func TestTriggerEvent(t *testing.T) {
 					event.Name())
 			}
 		case <-time.After(time.Millisecond * 250):
-			t.Fatal("received no event from Event channel")
+			t.Error("received no event from Event channel")
 		}
 	}()
 
-	go func() {
-		// Start the watching process.
-		if err := w.Start(time.Millisecond * 100); err != nil {
-			t.Fatal(err)
-		}
-	}()
+	startErrCh := startWatcherAsync(w, time.Millisecond*100)
 
 	w.TriggerEvent(Create, nil)
 
 	wg.Wait()
+	w.Close()
+	waitWatcherStop(t, startErrCh)
 }
 
 func TestEventAddFile(t *testing.T) {
@@ -678,14 +695,11 @@ func TestEventAddFile(t *testing.T) {
 		}
 	}()
 
-	go func() {
-		// Start the watching process.
-		if err := w.Start(time.Millisecond * 100); err != nil {
-			t.Fatal(err)
-		}
-	}()
+	startErrCh := startWatcherAsync(w, time.Millisecond*100)
 
 	wg.Wait()
+	w.Close()
+	waitWatcherStop(t, startErrCh)
 }
 
 // TODO: TestIgnoreFiles
@@ -747,14 +761,11 @@ func TestEventDeleteFile(t *testing.T) {
 		}
 	}()
 
-	go func() {
-		// Start the watching process.
-		if err := w.Start(time.Millisecond * 100); err != nil {
-			t.Fatal(err)
-		}
-	}()
+	startErrCh := startWatcherAsync(w, time.Millisecond*100)
 
 	wg.Wait()
+	w.Close()
+	waitWatcherStop(t, startErrCh)
 }
 
 func TestEventRenameFile(t *testing.T) {
@@ -803,18 +814,15 @@ func TestEventRenameFile(t *testing.T) {
 			}
 
 		case <-time.After(time.Millisecond * 250):
-			t.Fatal("received no rename event")
+			t.Error("received no rename event")
 		}
 	}()
 
-	go func() {
-		// Start the watching process.
-		if err := w.Start(time.Millisecond * 100); err != nil {
-			t.Fatal(err)
-		}
-	}()
+	startErrCh := startWatcherAsync(w, time.Millisecond*100)
 
 	wg.Wait()
+	w.Close()
+	waitWatcherStop(t, startErrCh)
 }
 
 func TestEventChmodFile(t *testing.T) {
@@ -878,14 +886,11 @@ func TestEventChmodFile(t *testing.T) {
 		}
 	}()
 
-	go func() {
-		// Start the watching process.
-		if err := w.Start(time.Millisecond * 100); err != nil {
-			t.Fatal(err)
-		}
-	}()
+	startErrCh := startWatcherAsync(w, time.Millisecond*100)
 
 	wg.Wait()
+	w.Close()
+	waitWatcherStop(t, startErrCh)
 }
 
 func TestRegexFilterHook(t *testing.T) {
@@ -944,12 +949,7 @@ func TestFilterFile(t *testing.T) {
 		}
 	}
 
-	go func() {
-		// Start the watching process.
-		if err := w.Start(time.Millisecond * 100); err != nil {
-			t.Fatal(err)
-		}
-	}()
+	startErrCh := startWatcherAsync(w, time.Millisecond*100)
 
 	go func() {
 		for {
@@ -964,6 +964,8 @@ func TestFilterFile(t *testing.T) {
 			t.Fatal("File should have been ignored")
 		}
 	}
+	w.Close()
+	waitWatcherStop(t, startErrCh)
 }
 
 func TestFilterFileShouldAlsoApplyOnRootFolder(t *testing.T) {
@@ -996,12 +998,7 @@ func TestFilterFileShouldAlsoApplyOnRootFolder(t *testing.T) {
 		}
 	}
 
-	go func() {
-		// Start the watching process.
-		if err := w.Start(time.Millisecond * 100); err != nil {
-			t.Fatal(err)
-		}
-	}()
+	startErrCh := startWatcherAsync(w, time.Millisecond*100)
 
 	go func() {
 		for {
@@ -1017,6 +1014,8 @@ func TestFilterFileShouldAlsoApplyOnRootFolder(t *testing.T) {
 			t.Fatalf("the directory itself '%s'hould have been ignored", info.Name())
 		}
 	}
+	w.Close()
+	waitWatcherStop(t, startErrCh)
 }
 
 func TestWatcherStartWithInvalidDuration(t *testing.T) {
@@ -1031,18 +1030,15 @@ func TestWatcherStartWithInvalidDuration(t *testing.T) {
 func TestWatcherStartWhenAlreadyRunning(t *testing.T) {
 	w := New()
 
-	go func() {
-		err := w.Start(time.Millisecond * 100)
-		if err != nil {
-			t.Fatal(err)
-		}
-	}()
+	startErrCh := startWatcherAsync(w, time.Millisecond*100)
 	w.Wait()
 
 	err := w.Start(time.Millisecond * 100)
 	if err != ErrWatcherRunning {
 		t.Fatalf("expected ErrWatcherRunning error, got %s", err.Error())
 	}
+	w.Close()
+	waitWatcherStop(t, startErrCh)
 }
 
 func TestWatcherRestartAfterClose(t *testing.T) {
@@ -1083,11 +1079,10 @@ func BenchmarkEventRenameFile(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	go func() {
-		// Start the watching process.
-		if err := w.Start(time.Millisecond); err != nil {
-			b.Fatal(err)
-		}
+	startErrCh := startWatcherAsync(w, time.Millisecond)
+	defer func() {
+		w.Close()
+		waitWatcherStop(b, startErrCh)
 	}()
 
 	var filenameFrom = filepath.Join(testDir, "file.txt")

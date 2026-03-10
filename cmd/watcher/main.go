@@ -22,6 +22,18 @@ func commandFromString(command string) (string, []string) {
 	return "sh", []string{"-c", command}
 }
 
+func runConfiguredCommand(cmdName string, cmdArgs []string, stdinPipe bool, event watcher.Event) error {
+	c := exec.Command(cmdName, cmdArgs...)
+	if stdinPipe {
+		c.Stdin = strings.NewReader(event.String())
+	} else {
+		c.Stdin = os.Stdin
+	}
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	return c.Run()
+}
+
 func main() {
 	interval := flag.String("interval", "100ms", "watcher poll interval")
 	recursive := flag.Bool("recursive", true, "watch folders recursively")
@@ -87,16 +99,8 @@ func main() {
 
 				// Run the command if one was specified.
 				if *cmd != "" {
-					c := exec.Command(cmdName, cmdArgs...)
-					if *stdinPipe {
-						c.Stdin = strings.NewReader(event.String())
-					} else {
-						c.Stdin = os.Stdin
-					}
-					c.Stdout = os.Stdout
-					c.Stderr = os.Stderr
-					if err := c.Run(); err != nil {
-						if (c.ProcessState == nil || !c.ProcessState.Success()) && *keepalive {
+					if err := runConfiguredCommand(cmdName, cmdArgs, *stdinPipe, event); err != nil {
+						if *keepalive {
 							log.Println(err)
 							continue
 						}
@@ -160,12 +164,8 @@ func main() {
 	// Run the command before watcher starts if one was specified.
 	go func() {
 		if *cmd != "" && *startcmd {
-			c := exec.Command(cmdName, cmdArgs...)
-			c.Stdin = os.Stdin
-			c.Stdout = os.Stdout
-			c.Stderr = os.Stderr
-			if err := c.Run(); err != nil {
-				if (c.ProcessState == nil || !c.ProcessState.Success()) && *keepalive {
+			if err := runConfiguredCommand(cmdName, cmdArgs, false, watcher.Event{}); err != nil {
+				if *keepalive {
 					log.Println(err)
 					return
 				}

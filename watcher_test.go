@@ -1273,6 +1273,51 @@ func TestWatcherCloseWithMaxEvents(t *testing.T) {
 	}
 }
 
+func TestWatcherCloseWithoutEventConsumer(t *testing.T) {
+	testDir, teardown := setup(t)
+	defer teardown()
+
+	w := New()
+
+	if err := w.AddRecursive(testDir); err != nil {
+		t.Fatal(err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- w.Start(time.Millisecond * 10)
+	}()
+	w.Wait()
+
+	for i := 0; i < 128; i++ {
+		filePath := filepath.Join(testDir, fmt.Sprintf("burst_%d.txt", i))
+		if err := ioutil.WriteFile(filePath, []byte{}, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	closed := make(chan struct{})
+	go func() {
+		w.Close()
+		close(closed)
+	}()
+
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watcher close blocked without an event consumer")
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("expected Start to return nil, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Start to return")
+	}
+}
+
 func TestOpsString(t *testing.T) {
 	testCases := []struct {
 		want     Op

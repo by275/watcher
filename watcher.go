@@ -138,8 +138,9 @@ func New() *Watcher {
 	wg.Add(1)
 
 	return &Watcher{
-		Event:   make(chan Event),
-		Error:   make(chan error),
+		// Buffering reduces producer stalls when consumers are slower than scan cycles.
+		Event:   make(chan Event, 64),
+		Error:   make(chan error, 16),
 		Closed:  make(chan struct{}),
 		close:   make(chan struct{}),
 		mu:      new(sync.Mutex),
@@ -659,7 +660,13 @@ func (w *Watcher) Start(d time.Duration) error {
 					close(cancel)
 					break inner
 				}
-				w.Event <- event
+				select {
+				case <-w.close:
+					close(cancel)
+					close(w.Closed)
+					return nil
+				case w.Event <- event:
+				}
 			case <-done: // Current cycle is finished.
 				break inner
 			}

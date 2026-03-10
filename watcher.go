@@ -576,6 +576,36 @@ type fileSignature struct {
 	isDir   bool
 }
 
+type eventScratch struct {
+	oldFiles      map[string]os.FileInfo
+	creates       map[string]os.FileInfo
+	removes       map[string]os.FileInfo
+	createBuckets map[fileSignature][]string
+}
+
+var eventScratchPool = sync.Pool{
+	New: func() any {
+		return &eventScratch{
+			oldFiles:      make(map[string]os.FileInfo),
+			creates:       make(map[string]os.FileInfo),
+			removes:       make(map[string]os.FileInfo),
+			createBuckets: make(map[fileSignature][]string),
+		}
+	},
+}
+
+func getEventScratch() *eventScratch {
+	return eventScratchPool.Get().(*eventScratch)
+}
+
+func putEventScratch(s *eventScratch) {
+	clear(s.oldFiles)
+	clear(s.creates)
+	clear(s.removes)
+	clear(s.createBuckets)
+	eventScratchPool.Put(s)
+}
+
 func signatureFromFileInfo(info os.FileInfo) fileSignature {
 	return fileSignature{
 		modTime: info.ModTime().UnixNano(),
@@ -761,13 +791,17 @@ func (w *Watcher) Start(d time.Duration) error {
 
 func (w *Watcher) pollEvents(files map[string]os.FileInfo, evt chan Event,
 	cancel chan struct{}) {
+	scratch := getEventScratch()
+	defer putEventScratch(scratch)
+
 	w.mu.RLock()
-	oldFiles := maps.Clone(w.files)
+	maps.Copy(scratch.oldFiles, w.files)
 	w.mu.RUnlock()
+	oldFiles := scratch.oldFiles
 
 	// Store create and remove events for use to check for rename events.
-	creates := make(map[string]os.FileInfo, len(files))
-	removes := make(map[string]os.FileInfo, len(oldFiles))
+	creates := scratch.creates
+	removes := scratch.removes
 
 	// Check for removed files.
 	for path, info := range oldFiles {
@@ -801,7 +835,7 @@ func (w *Watcher) pollEvents(files map[string]os.FileInfo, evt chan Event,
 	}
 
 	// Check for renames and moves.
-	createBuckets := make(map[fileSignature][]string, len(creates))
+	createBuckets := scratch.createBuckets
 	for path, info := range creates {
 		sig := signatureFromFileInfo(info)
 		createBuckets[sig] = append(createBuckets[sig], path)

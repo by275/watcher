@@ -138,8 +138,9 @@ func New() *Watcher {
 	wg.Add(1)
 
 	return &Watcher{
-		Event:   make(chan Event),
-		Error:   make(chan error),
+		// Buffering reduces producer stalls when consumers are slower than scan cycles.
+		Event:   make(chan Event, 64),
+		Error:   make(chan error, 16),
 		Closed:  make(chan struct{}),
 		close:   make(chan struct{}),
 		mu:      new(sync.Mutex),
@@ -194,62 +195,124 @@ func (w *Watcher) FilterOps(ops ...Op) {
 	w.mu.Unlock()
 }
 
-// Add adds either a single file or directory to the file list.
-func (w *Watcher) Add(name string) (err error) {
+type scanConfig struct {
+	ffh          []FilterFileHookFunc
+	ignored      map[string]struct{}
+	ignoreHidden bool
+}
+
+type eventConfig struct {
+	ops       map[Op]struct{}
+	maxEvents int
+}
+
+func (w *Watcher) snapshotScanConfigLocked() scanConfig {
+	cfg := scanConfig{
+		ffh:          append([]FilterFileHookFunc(nil), w.ffh...),
+		ignored:      make(map[string]struct{}, len(w.ignored)),
+		ignoreHidden: w.ignoreHidden,
+	}
+	for path := range w.ignored {
+		cfg.ignored[path] = struct{}{}
+	}
+	return cfg
+}
+
+func rootIgnoredOrHidden(name string, cfg scanConfig) (bool, error) {
+	if _, ignored := cfg.ignored[name]; ignored {
+		return true, nil
+	}
+	if !cfg.ignoreHidden {
+		return false, nil
+	}
+
+	isHidden, err := isHiddenFile(name)
+	if err != nil {
+		return false, err
+	}
+	return isHidden, nil
+}
+
+func (w *Watcher) snapshotEventConfig() eventConfig {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	cfg := eventConfig{
+		maxEvents: w.maxEvents,
+	}
+	if len(w.ops) > 0 {
+		cfg.ops = make(map[Op]struct{}, len(w.ops))
+		for op := range w.ops {
+			cfg.ops[op] = struct{}{}
+		}
+	}
+	return cfg
+}
+
+// Add adds either a single file or directory to the file list.
+func (w *Watcher) Add(name string) (err error) {
+	w.mu.Lock()
+	cfg := w.snapshotScanConfigLocked()
+	w.mu.Unlock()
 	name, err = filepath.Abs(name)
 	if err != nil {
 		return err
 	}
 
-	// If name is on the ignored list or if hidden files are
-	// ignored and name is a hidden file or directory, simply return.
-	_, ignored := w.ignored[name]
-
-	isHidden, err := isHiddenFile(name)
+	skipRoot, err := rootIgnoredOrHidden(name, cfg)
 	if err != nil {
 		return err
 	}
-
-	if ignored || (w.ignoreHidden && isHidden) {
+	if skipRoot {
 		return nil
 	}
 
 	// Add the directory's contents to the files list.
-	fileList, err := w.list(name)
+	fileList, err := listWithConfig(name, cfg)
 	if err != nil {
 		return err
 	}
+
+	w.mu.Lock()
 	for k, v := range fileList {
 		w.files[k] = v
 	}
 
 	// Add the name to the names list.
 	w.names[name] = false
+	w.mu.Unlock()
 
 	return nil
 }
 
 func (w *Watcher) list(name string) (map[string]os.FileInfo, error) {
-	fileList := make(map[string]os.FileInfo)
+	w.mu.Lock()
+	cfg := w.snapshotScanConfigLocked()
+	w.mu.Unlock()
+	return listWithConfig(name, cfg)
+}
 
+func listWithConfig(name string, cfg scanConfig) (map[string]os.FileInfo, error) {
 	// Make sure name exists.
 	stat, err := os.Stat(name)
 	if err != nil {
 		return nil, err
 	}
 
+	fileList := make(map[string]os.FileInfo)
 	fileList[name] = stat
-	for _, f := range w.ffh {
-		err := f(stat, name)
-		if err == ErrSkip {
-			delete(fileList, name)
-			continue
-		}
-		if err != nil {
-			return nil, err
+	includeRoot := true
+	if len(cfg.ffh) > 0 {
+		for _, f := range cfg.ffh {
+			err := f(stat, name)
+			if err == ErrSkip {
+				delete(fileList, name)
+				includeRoot = false
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -263,30 +326,34 @@ func (w *Watcher) list(name string) (map[string]os.FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	fileList = make(map[string]os.FileInfo, len(fInfoList)+1)
+	if includeRoot {
+		fileList[name] = stat
+	}
 	// Add all of the files in the directory to the file list as long
 	// as they aren't on the ignored list or are hidden files if ignoreHidden
 	// is set to true.
 outer:
 	for _, fInfo := range fInfoList {
 		path := filepath.Join(name, fInfo.Name())
-		_, ignored := w.ignored[path]
-
-		isHidden, err := isHiddenFile(path)
+		skipPath, err := rootIgnoredOrHidden(path, cfg)
 		if err != nil {
 			return nil, err
 		}
 
-		if ignored || (w.ignoreHidden && isHidden) {
+		if skipPath {
 			continue
 		}
 
-		for _, f := range w.ffh {
-			err := f(fInfo, path)
-			if err == ErrSkip {
-				continue outer
-			}
-			if err != nil {
-				return nil, err
+		if len(cfg.ffh) > 0 {
+			for _, f := range cfg.ffh {
+				err := f(fInfo, path)
+				if err == ErrSkip {
+					continue outer
+				}
+				if err != nil {
+					return nil, err
+				}
 			}
 		}
 
@@ -298,28 +365,39 @@ outer:
 // AddRecursive adds either a single file or directory recursively to the file list.
 func (w *Watcher) AddRecursive(name string) (err error) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
+	cfg := w.snapshotScanConfigLocked()
+	w.mu.Unlock()
 
 	name, err = filepath.Abs(name)
 	if err != nil {
 		return err
 	}
 
-	fileList, err := w.listRecursive(name)
+	fileList, err := listRecursiveWithConfig(name, cfg)
 	if err != nil {
 		return err
 	}
+
+	w.mu.Lock()
 	for k, v := range fileList {
 		w.files[k] = v
 	}
 
 	// Add the name to the names list.
 	w.names[name] = true
+	w.mu.Unlock()
 
 	return nil
 }
 
 func (w *Watcher) listRecursive(name string) (map[string]os.FileInfo, error) {
+	w.mu.Lock()
+	cfg := w.snapshotScanConfigLocked()
+	w.mu.Unlock()
+	return listRecursiveWithConfig(name, cfg)
+}
+
+func listRecursiveWithConfig(name string, cfg scanConfig) (map[string]os.FileInfo, error) {
 	fileList := make(map[string]os.FileInfo)
 
 	return fileList, filepath.Walk(name, func(path string, info os.FileInfo, err error) error {
@@ -329,27 +407,27 @@ func (w *Watcher) listRecursive(name string) (map[string]os.FileInfo, error) {
 
 		// If path is ignored and it's a directory, skip the directory. If it's
 		// ignored and it's a single file, skip the file.
-		_, ignored := w.ignored[path]
-
-		isHidden, err := isHiddenFile(path)
+		skipPath, err := rootIgnoredOrHidden(path, cfg)
 		if err != nil {
 			return err
 		}
 
-		if ignored || (w.ignoreHidden && isHidden) {
+		if skipPath {
 			if info.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 
-		for _, f := range w.ffh {
-			err := f(info, path)
-			if err == ErrSkip {
-				return nil
-			}
-			if err != nil {
-				return err
+		if len(cfg.ffh) > 0 {
+			for _, f := range cfg.ffh {
+				err := f(info, path)
+				if err == ErrSkip {
+					return nil
+				}
+				if err != nil {
+					return err
+				}
 			}
 		}
 
@@ -506,6 +584,22 @@ func (fs *fileInfo) Sys() interface{} {
 	return fs.sys
 }
 
+type fileSignature struct {
+	modTime int64
+	size    int64
+	mode    os.FileMode
+	isDir   bool
+}
+
+func signatureFromFileInfo(info os.FileInfo) fileSignature {
+	return fileSignature{
+		modTime: info.ModTime().UnixNano(),
+		size:    info.Size(),
+		mode:    info.Mode(),
+		isDir:   info.IsDir(),
+	}
+}
+
 // TriggerEvent is a method that can be used to trigger an event, separate to
 // the file watching process.
 func (w *Watcher) TriggerEvent(eventType Op, file os.FileInfo) {
@@ -518,47 +612,48 @@ func (w *Watcher) TriggerEvent(eventType Op, file os.FileInfo) {
 
 func (w *Watcher) retrieveFileList() map[string]os.FileInfo {
 	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	fileList := make(map[string]os.FileInfo)
-
-	var list map[string]os.FileInfo
-	var err error
-
+	cfg := w.snapshotScanConfigLocked()
+	names := make(map[string]bool, len(w.names))
 	for name, recursive := range w.names {
+		names[name] = recursive
+	}
+	prevFileCount := len(w.files)
+	w.mu.Unlock()
+
+	fileList := make(map[string]os.FileInfo, prevFileCount)
+
+	for name, recursive := range names {
+		var (
+			list map[string]os.FileInfo
+			err  error
+		)
 		if recursive {
-			list, err = w.listRecursive(name)
+			list, err = listRecursiveWithConfig(name, cfg)
 			if err != nil {
 				if os.IsNotExist(err) {
-					w.mu.Unlock()
 					pathErr, ok := err.(*os.PathError)
-					if ok {
-						if name == pathErr.Path {
-							w.Error <- ErrWatchedFileDeleted
-							w.RemoveRecursive(name)
-						}
+					if ok && name == pathErr.Path {
+						w.Error <- ErrWatchedFileDeleted
+						_ = w.RemoveRecursive(name)
 					}
-					w.mu.Lock()
 				} else {
 					w.Error <- err
 				}
+				continue
 			}
 		} else {
-			list, err = w.list(name)
+			list, err = listWithConfig(name, cfg)
 			if err != nil {
 				if os.IsNotExist(err) {
-					w.mu.Unlock()
 					pathErr, ok := err.(*os.PathError)
-					if ok {
-						if name == pathErr.Path {
-							w.Error <- ErrWatchedFileDeleted
-							w.Remove(name)
-						}
+					if ok && name == pathErr.Path {
+						w.Error <- ErrWatchedFileDeleted
+						_ = w.Remove(name)
 					}
-					w.mu.Lock()
 				} else {
 					w.Error <- err
 				}
+				continue
 			}
 		}
 		// Add the file's to the file list.
@@ -606,6 +701,7 @@ func (w *Watcher) Start(d time.Duration) error {
 
 		// Retrieve the file list for all watched file's and dirs.
 		fileList := w.retrieveFileList()
+		cfg := w.snapshotEventConfig()
 
 		// cancel can be used to cancel the current event polling function.
 		cancel := make(chan struct{})
@@ -627,23 +723,24 @@ func (w *Watcher) Start(d time.Duration) error {
 				close(w.Closed)
 				return nil
 			case event := <-evt:
-				w.mu.Lock()
-				ops := w.ops
-				maxEvents := w.maxEvents
-				w.mu.Unlock()
-
-				if len(ops) > 0 { // Filter Ops.
-					_, found := ops[event.Op]
+				if len(cfg.ops) > 0 { // Filter Ops.
+					_, found := cfg.ops[event.Op]
 					if !found {
 						continue
 					}
 				}
 				numEvents++
-				if maxEvents > 0 && numEvents > maxEvents {
+				if cfg.maxEvents > 0 && numEvents > cfg.maxEvents {
 					close(cancel)
 					break inner
 				}
-				w.Event <- event
+				select {
+				case <-w.close:
+					close(cancel)
+					close(w.Closed)
+					return nil
+				case w.Event <- event:
+				}
 			case <-done: // Current cycle is finished.
 				break inner
 			}
@@ -662,14 +759,18 @@ func (w *Watcher) Start(d time.Duration) error {
 func (w *Watcher) pollEvents(files map[string]os.FileInfo, evt chan Event,
 	cancel chan struct{}) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
+	oldFiles := make(map[string]os.FileInfo, len(w.files))
+	for path, info := range w.files {
+		oldFiles[path] = info
+	}
+	w.mu.Unlock()
 
 	// Store create and remove events for use to check for rename events.
-	creates := make(map[string]os.FileInfo)
-	removes := make(map[string]os.FileInfo)
+	creates := make(map[string]os.FileInfo, len(files))
+	removes := make(map[string]os.FileInfo, len(oldFiles))
 
 	// Check for removed files.
-	for path, info := range w.files {
+	for path, info := range oldFiles {
 		if _, found := files[path]; !found {
 			removes[path] = info
 		}
@@ -677,7 +778,7 @@ func (w *Watcher) pollEvents(files map[string]os.FileInfo, evt chan Event,
 
 	// Check for created files, writes and chmods.
 	for path, info := range files {
-		oldInfo, found := w.files[path]
+		oldInfo, found := oldFiles[path]
 		if !found {
 			// A file was created.
 			creates[path] = info
@@ -700,8 +801,23 @@ func (w *Watcher) pollEvents(files map[string]os.FileInfo, evt chan Event,
 	}
 
 	// Check for renames and moves.
+	createBuckets := make(map[fileSignature][]string, len(creates))
+	for path, info := range creates {
+		sig := signatureFromFileInfo(info)
+		createBuckets[sig] = append(createBuckets[sig], path)
+	}
+
 	for path1, info1 := range removes {
-		for path2, info2 := range creates {
+		sig := signatureFromFileInfo(info1)
+		candidates := createBuckets[sig]
+
+		for i := 0; i < len(candidates); i++ {
+			path2 := candidates[i]
+			info2, found := creates[path2]
+			if !found {
+				continue
+			}
+
 			if sameFile(info1, info2) {
 				e := Event{
 					Op:       Move,
@@ -717,12 +833,20 @@ func (w *Watcher) pollEvents(files map[string]os.FileInfo, evt chan Event,
 
 				delete(removes, path1)
 				delete(creates, path2)
+				candidates[i] = candidates[len(candidates)-1]
+				candidates = candidates[:len(candidates)-1]
+				if len(candidates) == 0 {
+					delete(createBuckets, sig)
+				} else {
+					createBuckets[sig] = candidates
+				}
 
 				select {
 				case <-cancel:
 					return
 				case evt <- e:
 				}
+				break
 			}
 		}
 	}

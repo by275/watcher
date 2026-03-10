@@ -421,11 +421,25 @@ func (w *Watcher) RemoveRecursive(name string) (err error) {
 	// If it's a directory, delete all of it's contents recursively
 	// from w.files.
 	for path := range w.files {
-		if strings.HasPrefix(path, name) {
+		if isSubpath(path, name) {
 			delete(w.files, path)
 		}
 	}
 	return nil
+}
+
+func isSubpath(path, root string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	if rel == ".." {
+		return false
+	}
+	return !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // Ignore adds paths that should be ignored.

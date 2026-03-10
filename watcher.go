@@ -529,8 +529,8 @@ func (w *Watcher) Ignore(paths ...string) (err error) {
 
 // WatchedFiles returns a map of files added to a Watcher.
 func (w *Watcher) WatchedFiles() map[string]os.FileInfo {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	w.mu.RLock()
+	defer w.mu.RUnlock()
 
 	files := make(map[string]os.FileInfo)
 	maps.Copy(files, w.files)

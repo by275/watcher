@@ -24,7 +24,7 @@ Events contain the `os.FileInfo` of the file or directory that the event is base
 # Installation
 
 ```shell
-go get -u github.com/radovskyb/watcher/...
+go get github.com/by275/watcher@latest
 ```
 
 # Features
@@ -55,7 +55,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/radovskyb/watcher"
+	"github.com/by275/watcher"
 )
 
 func main() {
@@ -125,7 +125,11 @@ If you would ike to contribute, simply submit a pull request.
 
 # Command
 
-`watcher` comes with a simple command which is installed when using the `go get` command from above.
+`watcher` comes with a simple command which can be installed with:
+
+```shell
+go install github.com/by275/watcher/cmd/watcher@latest
+```
 
 # Usage
 

@@ -2,7 +2,6 @@ package watcher
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -17,12 +16,12 @@ import (
 // the tests and returns a function that is used as
 // a teardown function when the tests are done.
 func setup(t testing.TB) (string, func()) {
-	testDir, err := ioutil.TempDir(".", "")
+	testDir, err := os.MkdirTemp(".", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	err = ioutil.WriteFile(filepath.Join(testDir, "file.txt"),
+	err = os.WriteFile(filepath.Join(testDir, "file.txt"),
 		[]byte{}, 0755)
 	if err != nil {
 		t.Fatal(err)
@@ -32,12 +31,12 @@ func setup(t testing.TB) (string, func()) {
 
 	for _, f := range files {
 		filePath := filepath.Join(testDir, f)
-		if err := ioutil.WriteFile(filePath, []byte{}, 0755); err != nil {
+		if err := os.WriteFile(filePath, []byte{}, 0755); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	err = ioutil.WriteFile(filepath.Join(testDir, ".dotfile"),
+	err = os.WriteFile(filepath.Join(testDir, ".dotfile"),
 		[]byte{}, 0755)
 	if err != nil {
 		t.Fatal(err)
@@ -49,7 +48,7 @@ func setup(t testing.TB) (string, func()) {
 		t.Fatal(err)
 	}
 
-	err = ioutil.WriteFile(filepath.Join(testDirTwo, "file_recursive.txt"),
+	err = os.WriteFile(filepath.Join(testDirTwo, "file_recursive.txt"),
 		[]byte{}, 0755)
 	if err != nil {
 		t.Fatal(err)
@@ -482,7 +481,7 @@ func TestWatcherRemoveRecursive(t *testing.T) {
 }
 
 func TestWatcherRemoveRecursiveShouldNotRemovePrefixedSibling(t *testing.T) {
-	baseDir, err := ioutil.TempDir(".", "")
+	baseDir, err := os.MkdirTemp(".", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -499,10 +498,10 @@ func TestWatcherRemoveRecursiveShouldNotRemovePrefixedSibling(t *testing.T) {
 
 	targetFile := filepath.Join(targetDir, "target.txt")
 	siblingFile := filepath.Join(siblingDir, "sibling.txt")
-	if err := ioutil.WriteFile(targetFile, []byte{}, 0755); err != nil {
+	if err := os.WriteFile(targetFile, []byte{}, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := ioutil.WriteFile(siblingFile, []byte{}, 0755); err != nil {
+	if err := os.WriteFile(siblingFile, []byte{}, 0755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -634,7 +633,7 @@ func TestEventAddFile(t *testing.T) {
 
 	for f := range files {
 		filePath := filepath.Join(testDir, f)
-		if err := ioutil.WriteFile(filePath, []byte{}, 0755); err != nil {
+		if err := os.WriteFile(filePath, []byte{}, 0755); err != nil {
 			t.Error(err)
 		}
 	}
@@ -940,7 +939,7 @@ func TestFilterFile(t *testing.T) {
 
 	for f := range files {
 		filePath := filepath.Join(testDir, f)
-		if err := ioutil.WriteFile(filePath, []byte{}, 0755); err != nil {
+		if err := os.WriteFile(filePath, []byte{}, 0755); err != nil {
 			t.Error(err)
 		}
 	}
@@ -992,7 +991,7 @@ func TestFilterFileShouldAlsoApplyOnRootFolder(t *testing.T) {
 
 	for f := range files {
 		filePath := filepath.Join(testDir, f)
-		if err := ioutil.WriteFile(filePath, []byte{}, 0755); err != nil {
+		if err := os.WriteFile(filePath, []byte{}, 0755); err != nil {
 			t.Error(err)
 		}
 	}
@@ -1246,7 +1245,7 @@ func TestWatcherCloseWithMaxEvents(t *testing.T) {
 
 	for i := 0; i < 20; i++ {
 		filePath := filepath.Join(testDir, fmt.Sprintf("storm_%d.txt", i))
-		if err := ioutil.WriteFile(filePath, []byte{}, 0755); err != nil {
+		if err := os.WriteFile(filePath, []byte{}, 0755); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1291,7 +1290,7 @@ func TestWatcherCloseWithoutEventConsumer(t *testing.T) {
 
 	for i := 0; i < 128; i++ {
 		filePath := filepath.Join(testDir, fmt.Sprintf("burst_%d.txt", i))
-		if err := ioutil.WriteFile(filePath, []byte{}, 0755); err != nil {
+		if err := os.WriteFile(filePath, []byte{}, 0755); err != nil {
 			t.Fatal(err)
 		}
 	}

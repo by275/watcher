@@ -3,7 +3,7 @@
 # Installation
 
 ```shell
-go get -u github.com/radovskyb/watcher/...
+go install github.com/by275/watcher/cmd/watcher@latest
 ```
 
 # Usage

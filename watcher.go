@@ -3,7 +3,6 @@ package watcher
 import (
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -322,7 +321,7 @@ func listWithConfig(name string, cfg scanConfig) (map[string]os.FileInfo, error)
 	}
 
 	// It's a directory.
-	fInfoList, err := ioutil.ReadDir(name)
+	fInfoList, err := os.ReadDir(name)
 	if err != nil {
 		return nil, err
 	}
@@ -334,8 +333,8 @@ func listWithConfig(name string, cfg scanConfig) (map[string]os.FileInfo, error)
 	// as they aren't on the ignored list or are hidden files if ignoreHidden
 	// is set to true.
 outer:
-	for _, fInfo := range fInfoList {
-		path := filepath.Join(name, fInfo.Name())
+	for _, entry := range fInfoList {
+		path := filepath.Join(name, entry.Name())
 		skipPath, err := rootIgnoredOrHidden(path, cfg)
 		if err != nil {
 			return nil, err
@@ -343,6 +342,11 @@ outer:
 
 		if skipPath {
 			continue
+		}
+
+		fInfo, err := entry.Info()
+		if err != nil {
+			return nil, err
 		}
 
 		if len(cfg.ffh) > 0 {

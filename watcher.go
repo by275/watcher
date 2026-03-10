@@ -506,6 +506,22 @@ func (fs *fileInfo) Sys() interface{} {
 	return fs.sys
 }
 
+type fileSignature struct {
+	modTime int64
+	size    int64
+	mode    os.FileMode
+	isDir   bool
+}
+
+func signatureFromFileInfo(info os.FileInfo) fileSignature {
+	return fileSignature{
+		modTime: info.ModTime().UnixNano(),
+		size:    info.Size(),
+		mode:    info.Mode(),
+		isDir:   info.IsDir(),
+	}
+}
+
 // TriggerEvent is a method that can be used to trigger an event, separate to
 // the file watching process.
 func (w *Watcher) TriggerEvent(eventType Op, file os.FileInfo) {
@@ -704,8 +720,23 @@ func (w *Watcher) pollEvents(files map[string]os.FileInfo, evt chan Event,
 	}
 
 	// Check for renames and moves.
+	createBuckets := make(map[fileSignature][]string, len(creates))
+	for path, info := range creates {
+		sig := signatureFromFileInfo(info)
+		createBuckets[sig] = append(createBuckets[sig], path)
+	}
+
 	for path1, info1 := range removes {
-		for path2, info2 := range creates {
+		sig := signatureFromFileInfo(info1)
+		candidates := createBuckets[sig]
+
+		for i := 0; i < len(candidates); i++ {
+			path2 := candidates[i]
+			info2, found := creates[path2]
+			if !found {
+				continue
+			}
+
 			if sameFile(info1, info2) {
 				e := Event{
 					Op:       Move,
@@ -721,12 +752,20 @@ func (w *Watcher) pollEvents(files map[string]os.FileInfo, evt chan Event,
 
 				delete(removes, path1)
 				delete(creates, path2)
+				candidates[i] = candidates[len(candidates)-1]
+				candidates = candidates[:len(candidates)-1]
+				if len(candidates) == 0 {
+					delete(createBuckets, sig)
+				} else {
+					createBuckets[sig] = candidates
+				}
 
 				select {
 				case <-cancel:
 					return
 				case evt <- e:
 				}
+				break
 			}
 		}
 	}
